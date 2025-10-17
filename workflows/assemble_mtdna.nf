@@ -3,7 +3,18 @@
     IMPORT MODULES / SUBWORKFLOWS / FUNCTIONS
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 */
-include { FASTQC                 } from '../modules/nf-core/fastqc/main'
+include { FASTQC                    } from '../modules/nf-core/fastqc/main'
+include { PYTHON3_CIRCULARIZE_MTDNA } from '../modules/local/python3/circularize_mtdna/main'
+include { CIRCULARMAPPER_REALIGNSAMFILE } from '../modules/nf-core/circularmapper/realignsamfile/main'
+include { ADAPTERREMOVAL         } from '../modules/local/adapterremoval/main'
+include { DEDUP                  } from '../modules/nf-core/dedup/main'
+include { PICARD_MARKDUPLICATES  } from '../modules/nf-core/picard/markduplicates/main'
+include { ANGSD_DOCOUNTS         } from '../modules/local/angsd/docounts/main'
+include { BWA_ALN                } from '../modules/local/bwa/aln/main'
+include { BWA_INDEX              } from '../modules/nf-core/bwa/index/main'
+include { BWA_MEM                } from '../modules/nf-core/bwa/mem/main'
+include { QUALIMAP_BAMQC         } from '../modules/nf-core/qualimap/bamqc/main'
+include { AWK_REPORT_DOFASTA     } from '../modules/local/awk/report_dofasta/main'
 include { MULTIQC                } from '../modules/nf-core/multiqc/main'
 include { paramsSummaryMap       } from 'plugin/nf-schema'
 include { paramsSummaryMultiqc   } from '../subworkflows/nf-core/utils_nfcore_pipeline'
@@ -20,19 +31,103 @@ workflow ASSEMBLE_MTDNA {
 
     take:
     ch_samplesheet // channel: samplesheet read in from --input
+
     main:
 
     ch_versions = Channel.empty()
     ch_multiqc_files = Channel.empty()
+
+    reference_fasta = Channel.fromPath(params.fasta)
+    prech_reference_fasta = reference_fasta.map{fasta->tuple([id:"reference"],fasta)}
+    
+    if(!params.skip_adapterremoval){
+            ADAPTERREMOVAL(
+                ch_samplesheet
+            )
+            reads = ADAPTERREMOVAL.out.read1
+        }
+    else{
+            reads = ch_samplesheet
+        }
+
+   if(params.create_circularmtdna){
+		//
+		// MODULE: PYTHON3_CIRCULARIZE_MTDNA
+		//
+		PYTHON3_CIRCULARIZE_MTDNA(
+		prech_reference_fasta
+		)
+		fa = PYTHON3_CIRCULARIZE_MTDNA.out.fa
+	}else{
+		fa = prech_reference_fasta
+	}
+
+   if(!params.bwamem_idx){
+		//
+		//MODULE: BWA_INDEX
+		//
+		BWA_INDEX(
+		fa
+		)
+		m1_fa_m2_idx = fa.combine(BWA_INDEX.out.index)
+	}else{
+		index = Channel.fromPath(params.bwamem_idx)
+		m1_fa_m2_idx = fa.combine(index)
+	}
+    prech_bwa_aln = reads.combine(m1_fa_m2_idx)
+    //
+    //MODULE:BWA_ALN
+    //
+    BWA_ALN(
+        prech_bwa_aln.map{meta, fastq, meta_f, fa, meta_i, idx -> tuple(meta, fastq)},
+        prech_bwa_aln.map{meta, fastq, meta_f, fa, meta_i, idx -> tuple(meta_i, idx)}
+    )
+    prech_realignsamfile = BWA_ALN.out.bam.combine(fa)
+    //
+    //MODULE:CIRCULARMAPPER_REALIGNSAMFILE
+    //
+    CIRCULARMAPPER_REALIGNSAMFILE(
+        prech_realignsamfile.map{meta, bam, meta_r, fa -> tuple(meta, bam)},
+        prech_realignsamfile.map{meta, bam, meta_r, fa -> tuple(meta_r, fa)},
+        [[],params.circle_nbp],
+        [[],[]]
+    )
+    //
+    // MODULE: PICARD_MARKDUPLICATES
+    //
+    PICARD_MARKDUPLICATES(
+        CIRCULARMAPPER_REALIGNSAMFILE.out.bam,
+        [[],[]],
+        [[],[]]
+    )
+    //
+    // MODULE: ANGSD_DOCOUNTS
+    //
+    ANGSD_DOCOUNTS(
+        PICARD_MARKDUPLICATES.out.bam.map{meta, bam ->tuple(meta, bam, [], [])}
+    )
+    //
+    //QUALIMAP_BAMQC
+    //
+    QUALIMAP_BAMQC(
+        PICARD_MARKDUPLICATES.out.bam,
+        []
+    )
+    //
+    //MODULE: AWK_REPORT_DOFASTA
+    //
+    AWK_REPORT_DOFASTA(
+        ANGSD_DOCOUNTS.out.log.map{meta, fasta -> fasta}.collect()
+    )
     //
     // MODULE: Run FastQC
     //
     FASTQC (
-        ch_samplesheet
+        reads
     )
     ch_multiqc_files = ch_multiqc_files.mix(FASTQC.out.zip.collect{it[1]})
     ch_versions = ch_versions.mix(FASTQC.out.versions.first())
-
+    ch_multiqc_files = ch_multiqc_files.mix(QUALIMAP_BAMQC.out.results.collect{it[1]})
     //
     // Collate and save software versions
     //
@@ -84,6 +179,7 @@ workflow ASSEMBLE_MTDNA {
         [],
         []
     )
+
 
     emit:multiqc_report = MULTIQC.out.report.toList() // channel: /path/to/multiqc_report.html
     versions       = ch_versions                 // channel: [ path(versions.yml) ]

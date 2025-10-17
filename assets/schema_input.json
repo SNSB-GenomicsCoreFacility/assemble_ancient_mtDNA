@@ -13,6 +13,11 @@
                 "errorMessage": "Sample name must be provided and cannot contain spaces",
                 "meta": ["id"]
             },
+            "lib": {
+                "type": "string",
+                "pattern": "^\\S+$",
+                "errorMessage": "Library name must be provided and cannot contain spaces",
+            },
             "fastq_1": {
                 "type": "string",
                 "format": "file-path",
@@ -28,6 +33,6 @@
                 "errorMessage": "FastQ file for reads 2 cannot contain spaces and must have extension '.fq.gz' or '.fastq.gz'"
             }
         },
-        "required": ["sample", "fastq_1"]
+        "required": ["sample", "lib", "fastq_1"]
     }
 }
