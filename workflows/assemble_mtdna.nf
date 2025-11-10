@@ -7,7 +7,6 @@ include { FASTQC                    } from '../modules/nf-core/fastqc/main'
 include { PYTHON3_CIRCULARIZE_MTDNA } from '../modules/local/python3/circularize_mtdna/main'
 include { CIRCULARMAPPER_REALIGNSAMFILE } from '../modules/nf-core/circularmapper/realignsamfile/main'
 include { ADAPTERREMOVAL           } from '../modules/local/adapterremoval/main'
-include { ADAPTERREMOVALFIXPREFIX  } from '../modules/nf-core/adapterremovalfixprefix/main'
 include { DEDUP                  } from '../modules/nf-core/dedup/main'
 include { SAMTOOLS_VIEW          } from '../modules/nf-core/samtools/view/main'
 include { PICARD_MARKDUPLICATES  } from '../modules/nf-core/picard/markduplicates/main'
@@ -36,7 +35,8 @@ workflow ASSEMBLE_MTDNA {
     ch_samplesheet // channel: samplesheet read in from --input
 
     main:
-
+    
+    //ch_samplesheet.view()
     ch_versions = Channel.empty()
     ch_multiqc_files = Channel.empty()
 
@@ -53,7 +53,7 @@ workflow ASSEMBLE_MTDNA {
             reads = ch_samplesheet
         }
 
-   if(params.create_circularmtdna){
+   if(params.create_circularmtdna && params.mtdna_consense == true){
 		//
 		// MODULE: PYTHON3_CIRCULARIZE_MTDNA
 		//
@@ -94,32 +94,82 @@ workflow ASSEMBLE_MTDNA {
         [],
         Channel.value("bai")
     )
-    prech_realignsamfile = SAMTOOLS_VIEW.out.bam.combine(fa)
+
+    if(params.mtdna_consense == true ){
+        prech_realignsamfile = SAMTOOLS_VIEW.out.bam.combine(fa)
+        //
+        //
+        //MODULE:CIRCULARMAPPER_REALIGNSAMFILE
+        //
+        CIRCULARMAPPER_REALIGNSAMFILE(
+            prech_realignsamfile.map{meta, bam, meta_r, fa -> tuple(meta, bam)},
+            prech_realignsamfile.map{meta, bam, meta_r, fa -> tuple(meta_r, fa)},
+            [[],params.circle_nbp],
+            [[],[]]
+        )
+        bam_to_dup = CIRCULARMAPPER_REALIGNSAMFILE.out.bam
+    }
+    else{
+            bam_to_dup = SAMTOOLS_VIEW.out.bam
+        }
+    
+
+    //def criteria = multiMapCriteria { meta, bam ->
+    //    dedup_b: [[meta, bam], meta.single_end == false]
+    //    picard_b:[[meta, bam], meta.single_end == true]
+    //    }
+
+    //bam_to_dup.multiMap(criteria).set{ch_dup}
+    
+    ch_dup = bam_to_dup.branch{ meta, bam -> 
+                picard_b: meta.single_end == true
+                dedup_b: meta.single_end == false
+        }
+
+    br_dedup = ch_dup.dedup_b
+    br_picard = ch_dup.picard_b
+
+    //br_picard.view()
+    
+    //br_dedup.view()
+
     //
-    //
-    //MODULE:CIRCULARMAPPER_REALIGNSAMFILE
-    //
-    CIRCULARMAPPER_REALIGNSAMFILE(
-        prech_realignsamfile.map{meta, bam, meta_r, fa -> tuple(meta, bam)},
-        prech_realignsamfile.map{meta, bam, meta_r, fa -> tuple(meta_r, fa)},
-        [[],params.circle_nbp],
-        [[],[]]
-    )
     // MODULE: PICARD_MARKDUPLICATES
     //
     PICARD_MARKDUPLICATES(
-        SAMTOOLS_VIEW.out.bam,
+        br_picard,
         [[],[]],
         [[],[]]
     )
+    //
+    // MODULE: DEDUP
+    //
+    DEDUP(
+        br_dedup
+    )
 
-    bam_groups = PICARD_MARKDUPLICATES.out.bam.map{meta,bam -> tuple([id:meta.id],bam)}.groupTuple()
+
+    bam_groups_picard = PICARD_MARKDUPLICATES.out.bam.map{meta,bam -> tuple([id:meta.id],bam)}.groupTuple()
+
+    bam_groups_dedup = DEDUP.out.bam.map{meta, bam -> tuple([id:meta.id],bam)}.groupTuple()
+
+
+    bam_groups_pd = bam_groups_picard.join(bam_groups_dedup,remainder:true)
+
+    bam_groups = bam_groups_pd.map{meta, l1, l2 -> 
+         def new_l1 = l1 ?: []
+         def new_l2 = l2 ?: []
+         def new_list = new_l1 + new_l2
+         [meta, new_list]
+        }
+
 
     // Split into two named branches
-    bam_split = bam_groups.branch {
-        to_merge: { id, bams -> bams.size() > 1 }
-        singles:  { id, bams -> bams.size() == 1 }
-    }
+    bam_split = bam_groups.branch { id, bams ->
+        to_merge: bams.size() > 1 
+        singles:  bams.size() == 1 
+        }
+
 
     // Now you can access them as separate channels:
     to_merge = bam_split.to_merge
@@ -138,24 +188,26 @@ workflow ASSEMBLE_MTDNA {
     ch_angsd_docounts = SAMTOOLS_MERGE.out.bam.mix(singles)
 
 
-    //
-    // MODULE: ANGSD_DOCOUNTS
-    //
-    ANGSD_DOCOUNTS(
-        ch_angsd_docounts.map{meta, bam ->tuple(meta, bam, [], [])}
-    )
+    if(params.mtdna_consense == true ){
+        //
+        // MODULE: ANGSD_DOCOUNTS
+        //
+        ANGSD_DOCOUNTS(
+            ch_angsd_docounts.map{meta, bam ->tuple(meta, bam, [], [])}
+        )
+        //
+        //MODULE: AWK_REPORT_DOFASTA
+        //
+        AWK_REPORT_DOFASTA(
+            ANGSD_DOCOUNTS.out.log.map{meta, fasta -> fasta}.collect()
+        )
+    }
     //
     //QUALIMAP_BAMQC
     //
     QUALIMAP_BAMQC(
         ch_angsd_docounts,
         []
-    )
-    //
-    //MODULE: AWK_REPORT_DOFASTA
-    //
-    AWK_REPORT_DOFASTA(
-        ANGSD_DOCOUNTS.out.log.map{meta, fasta -> fasta}.collect()
     )
     //
     // MODULE: Run FastQC

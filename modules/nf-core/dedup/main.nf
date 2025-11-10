@@ -22,7 +22,7 @@ process DEDUP {
 
     script:
     def args = task.ext.args   ?: ''
-    prefix   = task.ext.prefix ?: "${meta.id}"
+    prefix   = task.ext.prefix ?: "${meta.id}_${meta.lib}_dedup"
 
     """
     dedup \\
