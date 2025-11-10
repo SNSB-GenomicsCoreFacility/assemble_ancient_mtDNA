@@ -16,7 +16,11 @@
             "lib": {
                 "type": "string",
                 "pattern": "^\\S+$",
-                "errorMessage": "Library name must be provided and cannot contain spaces",
+                "errorMessage": "Library name must be provided and cannot contain spaces"
+            },
+            "udg_treated": {
+                "type": "boolean",
+                "errorMessage": "information about whether or not the lib is udg treated must be provided"
             },
             "fastq_1": {
                 "type": "string",
@@ -31,6 +35,6 @@
                 "errorMessage": "FastQ file for reads 2 cannot contain spaces and must have extension '.fq.gz' or '.fastq.gz'"
             }
         },
-        "required": ["sample", "lib", "fastq_1"]
+        "required": ["sample", "lib", "udg_treated", "fastq_1"]
     }
 }

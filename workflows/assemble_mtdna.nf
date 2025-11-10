@@ -14,6 +14,7 @@ include { ANGSD_DOCOUNTS         } from '../modules/local/angsd/docounts/main'
 include { BWA_ALN                } from '../modules/local/bwa/aln/main'
 include { BWA_INDEX              } from '../modules/nf-core/bwa/index/main'
 include { BWA_MEM                } from '../modules/nf-core/bwa/mem/main'
+include { BAMUTIL_TRIMBAM        } from '../modules/nf-core/bamutil/trimbam/main'
 include { SAMTOOLS_MERGE         } from '../modules/nf-core/samtools/merge/main'
 include { QUALIMAP_BAMQC         } from '../modules/nf-core/qualimap/bamqc/main'
 include { AWK_REPORT_DOFASTA     } from '../modules/local/awk/report_dofasta/main'
@@ -114,12 +115,6 @@ workflow ASSEMBLE_MTDNA {
         }
     
 
-    //def criteria = multiMapCriteria { meta, bam ->
-    //    dedup_b: [[meta, bam], meta.single_end == false]
-    //    picard_b:[[meta, bam], meta.single_end == true]
-    //    }
-
-    //bam_to_dup.multiMap(criteria).set{ch_dup}
     
     ch_dup = bam_to_dup.branch{ meta, bam -> 
                 picard_b: meta.single_end == true
@@ -129,9 +124,6 @@ workflow ASSEMBLE_MTDNA {
     br_dedup = ch_dup.dedup_b
     br_picard = ch_dup.picard_b
 
-    //br_picard.view()
-    
-    //br_dedup.view()
 
     //
     // MODULE: PICARD_MARKDUPLICATES
@@ -148,6 +140,7 @@ workflow ASSEMBLE_MTDNA {
         br_dedup
     )
 
+    PICARD_MARKDUPLICATES.out.bam.mix(DEDUP.out.bam).view()
 
     bam_groups_picard = PICARD_MARKDUPLICATES.out.bam.map{meta,bam -> tuple([id:meta.id],bam)}.groupTuple()
 
