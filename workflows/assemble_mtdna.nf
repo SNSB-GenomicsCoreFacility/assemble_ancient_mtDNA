@@ -66,7 +66,7 @@ workflow ASSEMBLE_MTDNA {
 		fa = prech_reference_fasta
 	}
 
-   if(!params.bwamem_idx){
+   if(!params.bwa_idx){
 		//
 		//MODULE: BWA_INDEX
 		//
@@ -75,8 +75,9 @@ workflow ASSEMBLE_MTDNA {
 		)
 		m1_fa_m2_idx = fa.combine(BWA_INDEX.out.index)
 	}else{
-		index = Channel.fromPath(params.bwamem_idx)
-		m1_fa_m2_idx = fa.combine(index)
+		index = Channel.fromPath(params.bwa_idx)
+        meta_idx = index.map{idx_path -> tuple([id:"reference"],idx_path)}
+		m1_fa_m2_idx = fa.combine(meta_idx)
 	}
     prech_bwa_aln = reads.combine(m1_fa_m2_idx)
     //
@@ -140,14 +141,28 @@ workflow ASSEMBLE_MTDNA {
         br_dedup
     )
 
-    PICARD_MARKDUPLICATES.out.bam.mix(DEDUP.out.bam).view()
+    
+    ch_pre_bamtrim = PICARD_MARKDUPLICATES.out.bam.mix(DEDUP.out.bam).branch{meta, bam -> 
+                udg: meta.udg == true
+                non_udg: meta.udg == false
+        }
 
-    bam_groups_picard = PICARD_MARKDUPLICATES.out.bam.map{meta,bam -> tuple([id:meta.id],bam)}.groupTuple()
+    ch_bamtrim = ch_pre_bamtrim.non_udg.combine([params.trim_left]).combine([params.trim_right])
+    
+    ch_bamtrim.view()
 
-    bam_groups_dedup = DEDUP.out.bam.map{meta, bam -> tuple([id:meta.id],bam)}.groupTuple()
+    BAMUTIL_TRIMBAM(
+        ch_bamtrim
+    )
+
+    
+
+    bam_groups_no_trim = ch_pre_bamtrim.udg.map{meta,bam -> tuple([id:meta.id],bam)}.groupTuple()
+
+    bam_groups_trim = BAMUTIL_TRIMBAM.out.bam.map{meta, bam -> tuple([id:meta.id],bam)}.groupTuple()
 
 
-    bam_groups_pd = bam_groups_picard.join(bam_groups_dedup,remainder:true)
+    bam_groups_pd = bam_groups_no_trim.join(bam_groups_trim,remainder:true)
 
     bam_groups = bam_groups_pd.map{meta, l1, l2 -> 
          def new_l1 = l1 ?: []
